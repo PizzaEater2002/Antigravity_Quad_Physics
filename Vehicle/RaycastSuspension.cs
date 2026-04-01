@@ -22,6 +22,7 @@ namespace Odal.Vehicle
         private ServiceLocator _locator;
 
         public Vector3 AverageNormal { get; private set; } = Vector3.up;
+        public bool IsGrounded { get; private set; }
 
         public void Init(ServiceLocator locator, VehicleConfigSO config, Rigidbody rb)
         {
@@ -77,10 +78,12 @@ namespace Odal.Vehicle
             if (hitCount > 0)
             {
                 AverageNormal = (normalSum / hitCount).normalized;
+                IsGrounded = true;
             }
             else
             {
                 AverageNormal = Vector3.Slerp(AverageNormal, Vector3.up, fixedDeltaTime * 2f);
+                IsGrounded = false;
             }
         }
     }

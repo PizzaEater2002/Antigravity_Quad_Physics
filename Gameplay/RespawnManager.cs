@@ -9,70 +9,54 @@ namespace Odal.Gameplay
 {
     /// <summary>
     /// Система респауна (Скрипт №21).
-    /// 
-    /// ● Каждые 0.5с сохраняет SafePoint если игрок на земле.
-    /// ● Если Y позиция ниже порога — респаун в последнюю SafePoint.
-    /// ● Выравнивает сферу по тангенсу сплайна после респауна.
-    /// ● Событие OnRespawn — для привязки UI эффектов (Fade-to-Black и т.д.).
+    /// Переписана согласно легаси-логике:
+    /// - Отказ от SafePoint. Всегда ищется ближайшая точка на сплайне.
+    /// - Определение падения по trueTrackHeight (raycast от сплайна вниз до меша).
+    /// - Респаун при перевороте (Flipped Check > 3с).
+    /// - Мгновенное гашение физических скоростей и центрирование.
     /// </summary>
     public class RespawnManager : MonoBehaviour, IService, IUpdatable
     {
         [Header("Settings")]
-        [Tooltip("Насколько низко относительно трассы можно упасть (глубина падения), прежде чем сработает респаун.")]
-        [SerializeField] private float _fallDepthThreshold = 5f;
-
-        [Tooltip("Интервал сохранения SafePoint (секунды).")]
-        [SerializeField] private float _safePointInterval = 0.5f;
+        [Tooltip("Насколько низко относительно трассы можно упасть, чтобы сработал респаун.")]
+        [SerializeField] private float _fallDepthThreshold = 15f;
+        
+        [Tooltip("Высота появления байка НАД треком при респауне")]
+        [SerializeField] private float _respawnHeightOffset = 2f;
+        
+        [Tooltip("Время, которое машина может лежать вверх ногами до авто-респавна (секунды)")]
+        [SerializeField] private float _maxFlippedTime = 3f;
 
         [Header("Track Raycasting")]
-        [Tooltip("Слой физической дороги. Нужен чтобы найти точную высоту поверхности под сплайном.")]
         [SerializeField] private LayerMask _trackLayer = ~0;
-
-        [Tooltip("Высота, с которой пускаем луч вниз, чтобы нащупать дорогу.")]
         [SerializeField] private float _raycastHeightOffset = 50f;
 
-        // ── Событие ──────────────────────────────────────────────────
-        /// <summary>Вызывается при респауне. Подпишись для Fade-to-Black UI.</summary>
         public event Action OnRespawn;
 
-        // ── Зависимости ──────────────────────────────────────────────
-        private ServiceLocator    _locator;
+        private ServiceLocator _locator;
         private SpherePhysicsCore _player;
-        private ISplineProvider   _spline;
+        private ISplineProvider _spline;
 
-        // ── Состояние ────────────────────────────────────────────────
-        private Vector3    _lastSafePosition;
-        private Quaternion _lastSafeRotation;
-
-        private float _safePointTimer;
-        private bool  _hasSafePoint;
-
-        private float _fallCheckTimer;
-        private float _currentTrackHeight;
-        private float _respawnCooldownTimer;
-
-        // ═══════════════════════════════════════════════════════════════
-        //  Инициализация
-        // ═══════════════════════════════════════════════════════════════
+        private float _flippedTimer;
+        private float _checkTimer;
+        private const float CHECK_INTERVAL = 0.2f;
+        
+        private Vector3 _lastNearestSplinePos;
 
         public void Init(ServiceLocator locator, SpherePhysicsCore player)
         {
             _locator = locator;
             _player  = player;
 
-            // Сплайн — опционален
             try   { _spline = locator.GetService<ISplineProvider>(); }
-            catch { /* без сплайна — ОК, выравнивание по forward */ }
+            catch { /* без сплайна — fallback сценарий */ }
 
-            // Первоначальный SafePoint = стартовая позиция игрока
-            _lastSafePosition = _player.transform.position;
-            _lastSafeRotation = _player.transform.rotation;
-            _hasSafePoint     = true;
+            _locator.RegisterService<RespawnManager>(this);
+            _locator.GetService<UpdateManager>().RegisterUpdatable(this);
 
-            locator.RegisterService<RespawnManager>(this);
-            locator.GetService<UpdateManager>().RegisterUpdatable(this);
+            if (_player != null)
+                _lastNearestSplinePos = _player.transform.position;
 
-            _currentTrackHeight = _player.transform.position.y;
             Debug.Log($"<b>RespawnManager</b>: Init OK. FallDepthThreshold={_fallDepthThreshold}");
         }
 
@@ -83,153 +67,101 @@ namespace Odal.Gameplay
             _locator.UnregisterService<RespawnManager>();
         }
 
-        // ═══════════════════════════════════════════════════════════════
-        //  IUpdatable
-        // ═══════════════════════════════════════════════════════════════
-
         public void Tick(float deltaTime)
         {
-            if (_player == null) return;
+            if (_player == null || _spline == null) return;
 
-            // 1. Обновление SafePoint
-            _safePointTimer += deltaTime;
-            if (_safePointTimer >= _safePointInterval)
+            _checkTimer -= deltaTime;
+            if (_checkTimer <= 0f)
             {
-                _safePointTimer = 0f;
-                UpdateSafePoint();
+                _checkTimer = CHECK_INTERVAL;
+                _spline.GetNearestPoint(_player.transform.position, 
+                    out _lastNearestSplinePos, out _, out _);
             }
 
-            // 2. Детекция падения (проверяем каждые 0.1 сек ради оптимизации)
-            if (_respawnCooldownTimer > 0f)
-            {
-                _respawnCooldownTimer -= deltaTime;
-            }
-            else
-            {
-                _fallCheckTimer += deltaTime;
-                if (_fallCheckTimer >= 0.1f)
-                {
-                    _fallCheckTimer = 0f;
-                    UpdateTrackHeightAndCheckFall();
-                }
-            }
+            CheckFallRespawn();
+            CheckFlippedRespawn(deltaTime);
         }
 
-        // ═══════════════════════════════════════════════════════════════
-        //  Логика
-        // ═══════════════════════════════════════════════════════════════
-
-        private void UpdateTrackHeightAndCheckFall()
+        private void CheckFallRespawn()
         {
-            if (_spline != null)
-            {
-                // Находим ближайшую точку на сплайне к текущей позиции байка
-                _spline.GetNearestPoint(_player.transform.position,
-                    out Vector3 nearestPoint, out _, out _);
+            // Ищем физическую сгенерированную дорогу точно под сплайном
+            float trueTrackHeight = _lastNearestSplinePos.y; 
 
-                _currentTrackHeight = nearestPoint.y;
-
-                // Уточняем высоту по физической поверхности, как при респауне
-                Vector3 rayStart = nearestPoint + Vector3.up * _raycastHeightOffset;
-                if (Physics.Raycast(rayStart, Vector3.down, out RaycastHit hit, _raycastHeightOffset * 2f, _trackLayer))
-                {
-                    _currentTrackHeight = hit.point.y;
-                }
-            }
-            else
+            Vector3 rayStart = _lastNearestSplinePos + Vector3.up * _raycastHeightOffset;
+            if (Physics.Raycast(rayStart, Vector3.down, out RaycastHit hit, _raycastHeightOffset * 2f, _trackLayer))
             {
-                // Если сплайна почему-то нет, отталкиваемся от последней безопасной точки
-                _currentTrackHeight = _lastSafePosition.y;
+                trueTrackHeight = hit.point.y; // Дорога найдена, берем её реальную высоту
             }
 
-            // Респавним, если упали ниже текущей высоты трассы минус порог
-            if (_player.transform.position.y < _currentTrackHeight - _fallDepthThreshold)
+            // Вылетел по горизонтали? Используем TrackWidth из ISplineProvider
+            Vector3 toPlayer = _player.transform.position - _lastNearestSplinePos;
+            float horizontalDist = Vector3.ProjectOnPlane(toPlayer, Vector3.up).magnitude;
+            float allowedWidth = (_spline.TrackWidth * 0.5f) + 1.5f;
+
+            bool isFallen = _player.transform.position.y < trueTrackHeight - _fallDepthThreshold;
+            bool isOutHorizontally = horizontalDist > allowedWidth;
+
+            if (isFallen || isOutHorizontally)
             {
                 DoRespawn();
             }
         }
 
-        /// <summary>
-        /// Сохраняет текущую позицию как безопасную,
-        /// только если игрок на земле (подвеска видит поверхность).
-        /// </summary>
-        private void UpdateSafePoint()
+        private void CheckFlippedRespawn(float deltaTime)
         {
-            // Проверяем через подвеску: если AverageNormal ≠ Vector3.up (слерпнутый),
-            // значит хотя бы один луч попал в землю
-            var suspension = _player.Suspension;
-            if (suspension == null) return;
+            float upDotProduct = Vector3.Dot(_player.transform.up, Vector3.up);
 
-            Vector3 normal = suspension.AverageNormal;
-
-            // В воздухе AverageNormal постепенно слерпится к Vector3.up,
-            // но на земле он всегда отличается от чистого (0,1,0) из-за рельефа
-            // Надёжнее: проверяем положение + скорость Y
-            Rigidbody rb = _player.VehicleRigidbody;
-            if (rb == null) return;
-
-            bool isGrounded = normal.sqrMagnitude > 0.9f
-                           && Mathf.Abs(rb.linearVelocity.y) < 3f;
-
-            if (isGrounded)
+            if (upDotProduct < 0.2f)
             {
-                _lastSafePosition = _player.transform.position;
-                _lastSafeRotation = _player.transform.rotation;
-                _hasSafePoint     = true;
-            }
-        }
-
-        /// <summary>
-        /// Респаун: обнуление скоростей, телепорт в SafePoint, выравнивание по сплайну.
-        /// </summary>
-        public void DoRespawn()
-        {
-            if (_player == null || !_hasSafePoint) return;
-
-            Rigidbody rb = _player.VehicleRigidbody;
-            if (rb != null)
-            {
-                rb.linearVelocity  = Vector3.zero;
-                rb.angularVelocity = Vector3.zero;
-            }
-
-            _respawnCooldownTimer = 1.5f; // Блокировка повторных срабатываний
-
-            // Телепорт и выравнивание
-            if (_spline != null)
-            {
-                // Ищем точку на сплайне (соответствующую центру трассы)
-                _spline.GetNearestPoint(_lastSafePosition,
-                    out Vector3 nearestPoint, out Vector3 tangent, out Vector3 upNormal);
-
-                // Пускаем луч вниз, чтобы найти РЕАЛЬНУЮ физическую поверхность (меш) под сплайном
-                Vector3 rayStart = nearestPoint + Vector3.up * _raycastHeightOffset;
-                if (Physics.Raycast(rayStart, Vector3.down, out RaycastHit hit, _raycastHeightOffset * 2f, _trackLayer))
+                _flippedTimer += deltaTime;
+                if (_flippedTimer >= _maxFlippedTime)
                 {
-                    nearestPoint = hit.point;
-                    // Игнорируем hit.normal, так как луч может попасть в кривой бордюр/ограждение
+                    DoRespawn();
                 }
-
-                // Ставим прямо над найденной поверхностью, чтобы 100% не провалиться сквозь меш
-                _player.transform.position = nearestPoint + Vector3.up * 1f;
-
-                // Выравнивание: тангенс сплайна проецируем на строго горизонтальную плоскость
-                Vector3 projectedTangent = Vector3.ProjectOnPlane(tangent, Vector3.up);
-                if (projectedTangent.sqrMagnitude > 0.001f)
-                    _player.transform.rotation = Quaternion.LookRotation(projectedTangent.normalized, Vector3.up);
-                else
-                    _player.transform.rotation = _lastSafeRotation;
             }
             else
             {
-                // Если сплайна нет — старый добрый респаун на месте падения
-                _player.transform.position = _lastSafePosition + Vector3.up * 0.5f;
-                _player.transform.rotation = _lastSafeRotation;
+                _flippedTimer = 0f;
+            }
+        }
+
+        [ContextMenu("Force Respawn")]
+        public void DoRespawn()
+        {
+            if (_player == null || _spline == null) return;
+
+            _flippedTimer = 0f;
+
+            // Вычисляем данные на сплайне В ТЕКУЩЕЙ точке
+            _spline.GetNearestPoint(_player.transform.position, 
+                out Vector3 worldPos, out Vector3 worldTangent, out Vector3 worldUp);
+
+            // Ищем физическую сгенерированную дорогу, чтобы поставить байк прямо на неё
+            Vector3 rayStart = worldPos + Vector3.up * _raycastHeightOffset;
+            if (Physics.Raycast(rayStart, Vector3.down, out RaycastHit hit, _raycastHeightOffset * 2f, _trackLayer))
+            {
+                worldPos = hit.point;
+                worldUp = hit.normal; // Выравниваем байк по реальному склону
+                worldTangent = Vector3.ProjectOnPlane(worldTangent, worldUp).normalized;
             }
 
-            Debug.Log("<b>RespawnManager</b>: Респаун выполнен!");
+            // Move the vehicle to the nearest point on the road, elevated by the offset
+            _player.transform.position = worldPos + (worldUp * _respawnHeightOffset);
+            
+            // Защита: Если tangent равен zero, используем forward
+            if (worldTangent.sqrMagnitude > 0.001f)
+                _player.transform.rotation = Quaternion.LookRotation(worldTangent, worldUp);
 
-            // Событие для UI (Fade-to-Black и т.д.)
+            // Мгновенное гашение скоростей (требование: public Rigidbody VehicleRigidbody => _rb;)
+            Rigidbody rb = _player.VehicleRigidbody;
+            if (rb != null)
+            {
+                rb.linearVelocity = Vector3.zero;
+                rb.angularVelocity = Vector3.zero;
+            }
+
+            Debug.Log("<b>RespawnManager</b>: レスパウン完了 (Фулл респаун по легаси системе)!");
             OnRespawn?.Invoke();
         }
     }

@@ -13,5 +13,10 @@ namespace Odal.Track
         /// Возвращает ближайшую точку на сплайне, тангенс (направление вперед) и нормаль (вектор вверх).
         /// </summary>
         void GetNearestPoint(Vector3 position, out Vector3 nearestPoint, out Vector3 tangent, out Vector3 upNormal);
+
+        /// <summary>
+        /// Возвращает ширину трассы.
+        /// </summary>
+        float TrackWidth { get; }
     }
 }

@@ -15,11 +15,17 @@ namespace Odal.Track
         [Header("References")]
         [Tooltip("Контейнер сплайнов, на основе которого строится трасса")]
         [SerializeField] private SplineContainer _splineContainer;
+        [Tooltip("Генератор дороги для получения ширины трассы")]
+        [SerializeField] private RoadGenerator _roadGenerator;
 
         private ServiceLocator _locator;
 
+        public float TrackWidth => _roadGenerator != null ? _roadGenerator.roadWidth : 10f;
+
         public void Init(ServiceLocator locator)
         {
+            if (_roadGenerator == null) _roadGenerator = GetComponent<RoadGenerator>();
+
             _locator = locator;
             _locator.RegisterService<ISplineProvider>(this);
             

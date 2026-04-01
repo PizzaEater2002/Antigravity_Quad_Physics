@@ -74,6 +74,8 @@ namespace Odal.Cameras
             locator.RegisterService<CameraCinematicController>(this);
             locator.GetService<UpdateManager>().RegisterUpdatable(this);
 
+            SnapToTarget(); // Снап на старте игры
+            
             Debug.Log($"<b>Camera</b>: Init OK. Target={(_target != null ? _target.name : "NULL")}");
         }
 
@@ -118,7 +120,15 @@ namespace Odal.Cameras
             {
                 Vector3 flatVel = Vector3.ProjectOnPlane(_targetRigidbody.linearVelocity, Vector3.up);
                 if (flatVel.sqrMagnitude > 1f) // > 1 м/с
+                {
                     _lastStableDir = flatVel.normalized;
+                }
+                else
+                {
+                    // Если стоим (после старта/респавна), берём направление носа
+                    Vector3 ff = Vector3.ProjectOnPlane(_target.forward, Vector3.up);
+                    if (ff.sqrMagnitude > 0.001f) _lastStableDir = ff.normalized;
+                }
             }
             else
             {
@@ -210,6 +220,27 @@ namespace Odal.Cameras
         public void TriggerShake(float intensity)
         {
             _currentShakeAmount = Mathf.Clamp01(Mathf.Max(_currentShakeAmount, intensity));
+        }
+
+        /// <summary>
+        /// Моментально перемещает и поворачивает камеру, чтобы смотреть туда же, куда направлен нос машины.
+        /// </summary>
+        public void SnapToTarget()
+        {
+            if (_target == null) return;
+
+            _smoothVelocity = Vector3.zero;
+
+            Vector3 ff = Vector3.ProjectOnPlane(_target.forward, Vector3.up);
+            if (ff.sqrMagnitude > 0.001f) _lastStableDir = ff.normalized;
+
+            Quaternion yaw = Quaternion.LookRotation(_lastStableDir, Vector3.up);
+            transform.position = _target.position + yaw * _followOffset;
+
+            _currentLookTarget = _target.position + _lastStableDir * _lookAheadDistance;
+            Vector3 lookDir = _currentLookTarget - transform.position;
+            if (lookDir.sqrMagnitude > 0.01f)
+                transform.rotation = Quaternion.LookRotation(lookDir, Vector3.up);
         }
     }
 }

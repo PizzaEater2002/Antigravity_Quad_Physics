@@ -116,6 +116,11 @@ namespace Odal.Core
             }
             _respawnManager.Init(_serviceLocator, _playerVehicle);
 
+            if (_cinematicCamera != null)
+            {
+                _respawnManager.OnRespawn += () => _cinematicCamera.SnapToTarget();
+            }
+
             // 7. Подписка на FixedUpdate
             _activeUpdateManager.RegisterFixedUpdatable(this);
 

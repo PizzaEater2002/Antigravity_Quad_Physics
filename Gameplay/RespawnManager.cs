@@ -49,6 +49,7 @@ namespace Odal.Gameplay
 
         private float _fallCheckTimer;
         private float _currentTrackHeight;
+        private float _respawnCooldownTimer;
 
         // ═══════════════════════════════════════════════════════════════
         //  Инициализация
@@ -99,11 +100,18 @@ namespace Odal.Gameplay
             }
 
             // 2. Детекция падения (проверяем каждые 0.1 сек ради оптимизации)
-            _fallCheckTimer += deltaTime;
-            if (_fallCheckTimer >= 0.1f)
+            if (_respawnCooldownTimer > 0f)
             {
-                _fallCheckTimer = 0f;
-                UpdateTrackHeightAndCheckFall();
+                _respawnCooldownTimer -= deltaTime;
+            }
+            else
+            {
+                _fallCheckTimer += deltaTime;
+                if (_fallCheckTimer >= 0.1f)
+                {
+                    _fallCheckTimer = 0f;
+                    UpdateTrackHeightAndCheckFall();
+                }
             }
         }
 
@@ -184,6 +192,8 @@ namespace Odal.Gameplay
                 rb.linearVelocity  = Vector3.zero;
                 rb.angularVelocity = Vector3.zero;
             }
+
+            _respawnCooldownTimer = 1.5f; // Блокировка повторных срабатываний
 
             // Телепорт и выравнивание
             if (_spline != null)

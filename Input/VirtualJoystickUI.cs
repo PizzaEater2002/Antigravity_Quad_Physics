@@ -18,16 +18,23 @@ namespace Odal.Input
         [Header("Images (для смены цвета)")]
         [SerializeField] private Image _baseImage;
         [SerializeField] private Image _knobImage;
+        [SerializeField] private Image _boostDot;
+        [SerializeField] private Image _preloadDot;
 
         [Header("Settings")]
         [SerializeField] private float _knobRadius = 80f;
         [SerializeField] private bool  _hideWhenInactive = true;
+        [SerializeField] private float _minBottomDistanceCM = 2f;
+
+        [Header("Magnetic Buttons Radius")]
+        [SerializeField] private float _buttonSnapRadius = 35f;
 
         [Header("Цвета режимов")]
-        [SerializeField] private Color _colorIdle     = new Color(1f, 1f, 1f, 0.3f);
-        [SerializeField] private Color _colorGas      = new Color(0.2f, 0.9f, 0.3f, 0.6f);
-        [SerializeField] private Color _colorBrake    = new Color(0.95f, 0.2f, 0.2f, 0.6f);
-        [SerializeField] private Color _colorSteering = new Color(0.7f, 0.3f, 0.9f, 0.6f);
+        [SerializeField] private Color _colorIdle     = new Color(0.2f, 0.9f, 0.2f, 0.6f); // Green (ГАЗ)
+        [SerializeField] private Color _colorBoost    = new Color(0.2f, 0.6f, 1f, 0.8f); // Blue
+        [SerializeField] private Color _colorPreload  = new Color(1f, 0.5f, 0f, 0.8f); // Orange
+        [SerializeField] private Color _colorBrake    = new Color(0.95f, 0.2f, 0.2f, 0.6f); // Red
+        [SerializeField] private Color _colorSteering = new Color(0.7f, 0.3f, 0.9f, 0.6f); // Lilac
 
         private JoystickGestureAnalyzer _analyzer;
         private ServiceLocator          _locator;
@@ -37,6 +44,11 @@ namespace Odal.Input
 
         private bool    _isDragging;
         private Vector2 _startScreenPos;
+
+        private float   _lastTapTime;
+        private int     _tapCombo;
+        private float   _tapWindow = 0.35f;
+        private float   _currentBrakeMult;
 
         // ═══════════════════════════════════════════════════════════════
 
@@ -61,6 +73,10 @@ namespace Odal.Input
                 _baseImage = _joystickBase.GetComponent<Image>();
             if (_knobImage == null && _joystickKnob != null)
                 _knobImage = _joystickKnob.GetComponent<Image>();
+
+            // Отключаем видимость дотов, оставляя их объекты активными для математики
+            if (_boostDot != null) _boostDot.enabled = false;
+            if (_preloadDot != null) _preloadDot.enabled = false;
 
             locator.RegisterService<VirtualJoystickUI>(this);
             locator.GetService<UpdateManager>().RegisterUpdatable(this);
@@ -106,6 +122,26 @@ namespace Odal.Input
 
             if (justPressed && !_isDragging)
             {
+                float dpi = Screen.dpi <= 0 ? 160f : Screen.dpi;
+                float minBottomPx = (_minBottomDistanceCM / 2.54f) * dpi;
+
+                // Ignore the initial touch entirely if the user tapped inside the forbidden bottom zone
+                if (pointerPos.y < minBottomPx) 
+                    return;
+
+                if (Time.unscaledTime - _lastTapTime <= _tapWindow)
+                {
+                    _tapCombo++; // Увеличиваем счетчик при быстром следующем нажатии
+                }
+                else
+                {
+                    _tapCombo = 1; // Сброс серии
+                }
+                _lastTapTime = Time.unscaledTime;
+
+                // Если это 2+ тап с удержанием, активируем тормоз (без прогрессии)
+                _currentBrakeMult = (_tapCombo > 1) ? 1f : 0f;
+
                 _isDragging     = true;
                 _startScreenPos = pointerPos;
                 PlaceJoystickAt(pointerPos);  // база И ручка в одну точку
@@ -115,7 +151,6 @@ namespace Odal.Input
             else if (isPressed && _isDragging)
             {
                 UpdateKnobPosition(pointerPos);
-                _analyzer.OnTouchMoved(_startScreenPos, pointerPos, deltaTime);
                 UpdateColors();
             }
             else if ((justReleased || !isPressed) && _isDragging)
@@ -128,6 +163,10 @@ namespace Odal.Input
         {
             if (!_isDragging) return;
             _isDragging = false;
+            
+            _currentBrakeMult = 0f;
+            _analyzer.SetBrakeMultiplier(0f);
+            
             _analyzer.OnTouchEnded();
             ResetKnob();
             SetColors(_colorIdle);
@@ -157,6 +196,18 @@ namespace Odal.Input
             if (_joystickBase != null)
                 _joystickBase.anchoredPosition = localPos;
 
+            // Position and Activate external buttons
+            if (_boostDot != null)
+            {
+                _boostDot.gameObject.SetActive(true);
+                _boostDot.rectTransform.anchoredPosition = new Vector2(0f, _knobRadius); // above
+            }
+            if (_preloadDot != null)
+            {
+                _preloadDot.gameObject.SetActive(true);
+                _preloadDot.rectTransform.anchoredPosition = new Vector2(0f, -_knobRadius); // below
+            }
+
             // Ручка — тоже в центр базы (не в центр канваса!)
             if (_joystickKnob != null)
             {
@@ -177,31 +228,67 @@ namespace Odal.Input
         {
             if (_joystickBase == null || _joystickKnob == null) return;
 
+            Vector2 newKnobPos = Vector2.zero;
+
+            // 1. Считаем сырое локальное смещение
             if (_joystickKnob.parent == _joystickBase)
             {
-                // Дочерний: считаем локальное смещение от базы
                 RectTransformUtility.ScreenPointToLocalPointInRectangle(
                     _joystickBase, screenPos, _uiCamera, out Vector2 localPos);
 
                 if (localPos.magnitude > _knobRadius)
                     localPos = localPos.normalized * _knobRadius;
 
-                _joystickKnob.anchoredPosition = localPos;
+                newKnobPos = localPos;
             }
             else
             {
-                // Сиблинг: считаем смещение от начальной позиции базы
                 RectTransform parentRect = _joystickBase.parent as RectTransform;
-                if (parentRect == null) return;
+                if (parentRect != null)
+                {
+                    RectTransformUtility.ScreenPointToLocalPointInRectangle(
+                        parentRect, screenPos, _uiCamera, out Vector2 localPos);
 
-                RectTransformUtility.ScreenPointToLocalPointInRectangle(
-                    parentRect, screenPos, _uiCamera, out Vector2 localPos);
+                    Vector2 delta = localPos - _joystickBase.anchoredPosition;
+                    if (delta.magnitude > _knobRadius)
+                        delta = delta.normalized * _knobRadius;
 
-                Vector2 delta = localPos - _joystickBase.anchoredPosition;
-                if (delta.magnitude > _knobRadius)
-                    delta = delta.normalized * _knobRadius;
+                    newKnobPos = delta; // We track relative delta for distance checks
+                }
+            }
 
-                _joystickKnob.anchoredPosition = _joystickBase.anchoredPosition + delta;
+            // 2. Button Constraints & Analyzer State Sync
+            bool isBoosting = false;
+            bool isPreloading = false;
+
+            // Буст теперь срабатывает просто по высоте (верхние 30% радиуса), без магнита по Х,
+            // чтобы можно было подруливать влево/вправо удерживая верхнюю позицию
+            if (newKnobPos.y >= _knobRadius * 0.7f)
+            {
+                isBoosting = true;
+            }
+            else if (_preloadDot != null && Vector2.Distance(newKnobPos, _preloadDot.rectTransform.anchoredPosition) <= _buttonSnapRadius)
+            {
+                newKnobPos = _preloadDot.rectTransform.anchoredPosition; // Magnetic Snap for Preload Only!
+                isPreloading = true;
+            }
+
+            // Set states on analyzer
+            _analyzer.SetBoostActive(isBoosting);
+            _analyzer.SetPreloadActive(isPreloading);
+            _analyzer.SetBrakeMultiplier(_currentBrakeMult);
+
+            // Send normalized analog offset for perfect progressive steering [-1..1]
+            _analyzer.SetVirtualAxis(newKnobPos / _knobRadius);
+
+            // 3. Apply position
+            if (_joystickKnob.parent == _joystickBase)
+            {
+                _joystickKnob.anchoredPosition = newKnobPos;
+            }
+            else
+            {
+                _joystickKnob.anchoredPosition = _joystickBase.anchoredPosition + newKnobPos;
             }
         }
 
@@ -224,12 +311,14 @@ namespace Odal.Input
 
             Color target;
 
-            if (_analyzer.IsBraking)
-                target = _colorBrake;        // Красный — тормоз
+            if (_analyzer.IsPreloading)
+                target = _colorPreload;      // Orange — Preload
+            else if (_analyzer.IsBoosting)
+                target = _colorBoost;        // Blue — Boost
+            else if (_analyzer.IsBraking)
+                target = _colorBrake;        // Red — Тормоз
             else if (Mathf.Abs(_analyzer.Steering) > 0.3f)
-                target = _colorSteering;     // Лиловый — поворот
-            else if (_analyzer.Throttle > 0.1f)
-                target = _colorGas;          // Зелёный — газ
+                target = _colorSteering;     // Lilac/Purple — Поворот
             else
                 target = _colorIdle;
 
@@ -255,6 +344,9 @@ namespace Odal.Input
             if (_joystickBase != null) _joystickBase.gameObject.SetActive(visible);
             if (_joystickKnob != null && _joystickKnob.parent != _joystickBase)
                 _joystickKnob.gameObject.SetActive(visible);
+
+            if (_boostDot != null) _boostDot.gameObject.SetActive(visible);
+            if (_preloadDot != null) _preloadDot.gameObject.SetActive(visible);
         }
 
         private bool HasTouch(out Vector2 position, out UnityEngine.InputSystem.TouchPhase phase)

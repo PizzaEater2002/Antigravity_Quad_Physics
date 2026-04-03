@@ -60,6 +60,21 @@ public class RoadGenerator : MonoBehaviour
         meshFilter = GetComponent<MeshFilter>();
         meshCollider = GetComponent<MeshCollider>();
 
+        MeshRenderer renderer = GetComponent<MeshRenderer>();
+        if (renderer.sharedMaterial == null || renderer.sharedMaterial.name == "Default-Material")
+        {
+            // Automatically assign a URP material that supports vertex colors
+            Shader shader = Shader.Find("Universal Render Pipeline/Particles/Lit");
+            if (shader == null) shader = Shader.Find("Standard"); // fallback
+            
+            if (shader != null)
+            {
+                Material mat = new Material(shader);
+                mat.name = "GeneratedRoadMaterial";
+                renderer.sharedMaterial = mat;
+            }
+        }
+
         Spline.Changed -= OnSplineChanged;
         Spline.Changed += OnSplineChanged;
     }
@@ -248,6 +263,10 @@ public class RoadGenerator : MonoBehaviour
         int gridVertexCount = lengthSegments * crossVerts;
         Vector3[] gridVertices = new Vector3[gridVertexCount];
         Vector2[] gridUVs      = new Vector2[gridVertexCount];
+        Color32[] gridColors   = new Color32[gridVertexCount];
+
+        Color32 colorAsphalt = new Color32(40, 40, 42, 255);
+        Color32 colorLine    = new Color32(30, 140, 255, 255); // Blue
 
         float currentDistance = 0f;
 
@@ -268,6 +287,7 @@ public class RoadGenerator : MonoBehaviour
 
                 gridVertices[idx] = transform.InverseTransformPoint(worldPos);
                 gridUVs[idx] = new Vector2((float)j / (crossVerts - 1), vCoord);
+                gridColors[idx] = Mathf.Abs(u) <= 0.05f ? colorLine : colorAsphalt;
             }
         }
 
@@ -276,8 +296,9 @@ public class RoadGenerator : MonoBehaviour
         // ─────────────────────────────────────────────────────────────────
 
         List<Vector3> finalVertices = new List<Vector3>();
-        List<Vector2> finalUVs     = new List<Vector2>();
-        List<int>     finalTris    = new List<int>();
+        List<Vector2> finalUVs      = new List<Vector2>();
+        List<Color32> finalColors   = new List<Color32>();
+        List<int>     finalTris     = new List<int>();
 
         if (useFanTriangulation)
         {
@@ -298,6 +319,7 @@ public class RoadGenerator : MonoBehaviour
             // Сначала копируем все grid-вершины
             finalVertices.AddRange(gridVertices);
             finalUVs.AddRange(gridUVs);
+            finalColors.AddRange(gridColors);
 
             for (int i = 0; i < lengthSegments - 1; i++)
             {
@@ -314,10 +336,14 @@ public class RoadGenerator : MonoBehaviour
                                          gridVertices[tl] + gridVertices[tr]) * 0.25f;
                     Vector2 centerUV  = (gridUVs[bl] + gridUVs[br] +
                                          gridUVs[tl] + gridUVs[tr]) * 0.25f;
+                    
+                    float centerU = centerUV.x - 0.5f;
+                    Color32 centerColor = Mathf.Abs(centerU) <= 0.05f ? colorLine : colorAsphalt;
 
                     int centerIdx = finalVertices.Count;
                     finalVertices.Add(centerPos);
                     finalUVs.Add(centerUV);
+                    finalColors.Add(centerColor);
 
                     // 4 треугольника от центра к рёбрам (видимые сверху)
                     finalTris.Add(bl); finalTris.Add(centerIdx); finalTris.Add(br);
@@ -335,6 +361,7 @@ public class RoadGenerator : MonoBehaviour
 
             finalVertices.AddRange(gridVertices);
             finalUVs.AddRange(gridUVs);
+            finalColors.AddRange(gridColors);
 
             for (int i = 0; i < lengthSegments - 1; i++)
             {
@@ -357,6 +384,7 @@ public class RoadGenerator : MonoBehaviour
 
         generatedMesh.SetVertices(finalVertices);
         generatedMesh.SetUVs(0, finalUVs);
+        generatedMesh.SetColors(finalColors);
         generatedMesh.SetTriangles(finalTris, 0);
 
         generatedMesh.RecalculateBounds();
@@ -370,8 +398,8 @@ public class RoadGenerator : MonoBehaviour
         int totalVerts = finalVertices.Count;
         if (totalVerts > 50000)
         {
-            Debug.LogWarning($"[RoadGenerator] Меш: {totalVerts} вершин, {totalTris} треугольников. " +
-                             $"Много! Увеличь segmentLength или уменьши crossSectionVertices.");
+            Debug.LogWarning($"[RoadGenerator] Mesh: {totalVerts} vertices, {totalTris} triangles. " +
+                             $"Too high! Increase segmentLength or decrease crossSectionVertices.");
         }
     }
 }

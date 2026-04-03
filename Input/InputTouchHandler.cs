@@ -33,7 +33,7 @@ namespace Odal.Input
             locator.RegisterService<InputTouchHandler>(this);
             locator.GetService<UpdateManager>().RegisterUpdatable(this);
 
-            Debug.Log("<b>InputTouchHandler</b>: Инициализирован, EnhancedTouch включён.");
+            Debug.Log("<b>InputTouchHandler</b>: Initialized, EnhancedTouch enabled.");
         }
 
         private void OnDestroy()

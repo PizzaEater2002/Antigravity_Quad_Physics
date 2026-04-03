@@ -57,7 +57,7 @@ namespace Odal.Cameras
             _cam     = GetComponent<UnityEngine.Camera>();
 
             if (_target == null)
-                Debug.LogError("<b>Camera</b>: _target не назначен!", this);
+                Debug.LogError("<b>Camera</b>: _target is not assigned!", this);
 
             try   { _splineProvider  = locator.GetService<ISplineProvider>(); }
             catch { /* без сплайна — ОК */ }

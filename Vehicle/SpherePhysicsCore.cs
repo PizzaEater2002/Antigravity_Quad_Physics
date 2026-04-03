@@ -97,5 +97,23 @@ namespace Odal.Vehicle
             if (flatVel.sqrMagnitude > 0.01f)
                 _rb.AddForce(-flatVel.normalized * force, ForceMode.Force);
         }
+
+        public void Jump(float maxForce)
+        {
+            if (_rb == null) return;
+            if (_suspension != null && !_suspension.IsGrounded) return; // Prevent double jumping in air
+
+            float currentSpeed = _rb.linearVelocity.magnitude;
+            float minSpeed = (_config != null) ? _config.MinJumpSpeed : 5f;
+            float maxSpeed = (_config != null) ? _config.MaxJumpSpeed : 25f;
+
+            if (currentSpeed < minSpeed) return; // Слишком медленно для прыжка
+
+            // Пропорциональный расчет силы: 100% силы будет только на MaxJumpSpeed
+            float speedRatio = Mathf.Clamp01(currentSpeed / maxSpeed);
+            float finalForce = maxForce * speedRatio;
+
+            _rb.AddForce(transform.up * finalForce, ForceMode.Impulse);
+        }
     }
 }

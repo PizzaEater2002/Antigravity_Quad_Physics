@@ -44,6 +44,9 @@ namespace Odal.Core
         private UpdateManager           _activeUpdateManager;
         private JoystickGestureAnalyzer _analyzer;
         private bool                    _keyboardWasUsed;
+        private bool                    _wasPreloading;
+        private float                   _timeAtZeroSpeedWhileBraking = -1f;
+        private bool                    _autoGasEngaged;
 
         private void Awake()
         {
@@ -85,7 +88,7 @@ namespace Odal.Core
             if (_virtualJoystick != null)
             {
                 _virtualJoystick.Init(_serviceLocator, _analyzer);
-                Debug.Log("<b>Bootstrapper</b>: Используется VirtualJoystickUI.");
+                Debug.Log("<b>Bootstrapper</b>: VirtualJoystickUI in use.");
             }
             else
             {
@@ -127,7 +130,7 @@ namespace Odal.Core
             // 7. Подписка на FixedUpdate
             _activeUpdateManager.RegisterFixedUpdatable(this);
 
-            Debug.Log("<b>Bootstrapper</b>: Все системы запущены.");
+            Debug.Log("<b>Bootstrapper</b>: All systems started.");
         }
 
         /// <summary>
@@ -152,7 +155,7 @@ namespace Odal.Core
             if (flatTangent.sqrMagnitude > 0.001f)
             {
                 _playerVehicle.transform.rotation = Quaternion.LookRotation(flatTangent.normalized, Vector3.up);
-                Debug.Log($"<b>Bootstrapper</b>: Сфера выровнена по сплайну.");
+                Debug.Log($"<b>Bootstrapper</b>: Sphere aligned to spline.");
             }
         }
 
@@ -173,11 +176,54 @@ namespace Odal.Core
 #if UNITY_EDITOR
             ReadKeyboard();
 #endif
+            
+            bool currentlyPreloading = _analyzer.IsPreloading;
+            if (_wasPreloading && !currentlyPreloading)
+            {
+                _playerVehicle.Jump(_vehicleConfig.JumpForce);
+            }
+            _wasPreloading = currentlyPreloading;
 
-            if (!_analyzer.IsTouching) return;
+            if (!_analyzer.IsTouching)
+            {
+                _timeAtZeroSpeedWhileBraking = -1f;
+                _autoGasEngaged = false;
+                return;
+            }
+
+            if (_analyzer.IsBraking)
+            {
+                if (!_autoGasEngaged)
+                {
+                    float speed = _playerVehicle.VehicleRigidbody.linearVelocity.magnitude;
+                    if (speed < 0.5f) // Считаем 0.5 м/с полной остановкой
+                    {
+                        if (_timeAtZeroSpeedWhileBraking < 0f)
+                            _timeAtZeroSpeedWhileBraking = Time.unscaledTime;
+                            
+                        if (Time.unscaledTime - _timeAtZeroSpeedWhileBraking >= _vehicleConfig.AutoGasDelayAfterStop)
+                        {
+                            _autoGasEngaged = true;
+                        }
+                    }
+                    else
+                    {
+                        _timeAtZeroSpeedWhileBraking = -1f;
+                    }
+                }
+            }
+            else
+            {
+                _timeAtZeroSpeedWhileBraking = -1f;
+                _autoGasEngaged = false;
+            }
 
             // Газ
-            if (_analyzer.IsBoosting)
+            if (_autoGasEngaged)
+            {
+                _playerVehicle.ApplyThrust(_vehicleConfig.ThrustForce);
+            }
+            else if (_analyzer.IsBoosting)
             {
                 _playerVehicle.ApplyThrust(_vehicleConfig.BoostForce);
             }
@@ -190,8 +236,8 @@ namespace Odal.Core
             _playerVehicle.ApplySteering(_analyzer.Steering);
 
             // Тормоз
-            if (_analyzer.IsBraking)
-                _playerVehicle.ApplyBrake(_vehicleConfig.BrakeForce);
+            if (_analyzer.IsBraking && !_autoGasEngaged)
+                _playerVehicle.ApplyBrake(_vehicleConfig.BrakeForce * _analyzer.BrakeMultiplier);
         }
 
 #if UNITY_EDITOR

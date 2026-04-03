@@ -127,11 +127,11 @@ public class SplineBaker : MonoBehaviour
 
         if (seamIndices.Count == 0)
         {
-            Debug.Log("[SplineBaker] Швы не обнаружены! Все стыки ровные.");
+            Debug.Log("[SplineBaker] No seams detected! All joints are smooth.");
             return;
         }
 
-        Debug.Log($"[SplineBaker] Обнаружено {seamIndices.Count} швов. Исправляю...");
+        Debug.Log($"[SplineBaker] Detected {seamIndices.Count} seams. Fixing...");
 
         // Шаг 2: Для каждого шва — сгладить зону вокруг него
         // Собираем множество индексов, которые нужно обработать
@@ -194,8 +194,8 @@ public class SplineBaker : MonoBehaviour
         EditorUtility.SetDirty(splineContainer.gameObject);
 #endif
 
-        Debug.Log($"[SplineBaker] Исправлено {seamIndices.Count} швов " +
-                  $"({affectedIndices.Count} точек × {seamFixIterations} итераций).");
+        Debug.Log($"[SplineBaker] Fixed {seamIndices.Count} seams " +
+                  $"({affectedIndices.Count} knots × {seamFixIterations} iterations).");
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -217,7 +217,7 @@ public class SplineBaker : MonoBehaviour
 
         if (knotCount < 3)
         {
-            Debug.LogWarning("[SplineBaker] Сплайн слишком короткий для сглаживания!");
+            Debug.LogWarning("[SplineBaker] Spline is too short for smoothing!");
             return;
         }
 
@@ -288,8 +288,8 @@ public class SplineBaker : MonoBehaviour
         EditorUtility.SetDirty(splineContainer.gameObject);
 #endif
 
-        Debug.Log($"[SplineBaker] Сглаживание: {smoothingIterations} итераций, " +
-                  $"окно {windowSize} точек (radius={smoothingRadius}).");
+        Debug.Log($"[SplineBaker] Smoothing: {smoothingIterations} iterations, " +
+                  $"window {windowSize} knots (radius={smoothingRadius}).");
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -302,7 +302,7 @@ public class SplineBaker : MonoBehaviour
         if (splineContainer == null || splineContainer.Splines.Count == 0) return;
         if (smoothingZones.Count == 0)
         {
-            Debug.LogWarning("[SplineBaker] Добавьте хотя бы одну зону (пустой GameObject) в массив smoothingZones!");
+            Debug.LogWarning("[SplineBaker] Add at least one zone (empty GameObject) to smoothingZones array!");
             return;
         }
 
@@ -371,7 +371,7 @@ public class SplineBaker : MonoBehaviour
         EditorUtility.SetDirty(splineContainer.gameObject);
 #endif
 
-        Debug.Log($"[SplineBaker] Зональное сглаживание: {modifiedKnots.Count} точек.");
+        Debug.Log($"[SplineBaker] Zonal smoothing: {modifiedKnots.Count} knots modified.");
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -392,7 +392,7 @@ public class SplineBaker : MonoBehaviour
 
         if (splineLength <= macroAnchorDistance)
         {
-            Debug.LogWarning("[SplineBaker] Трасса слишком короткая для Макро-сглаживания!");
+            Debug.LogWarning("[SplineBaker] Track is too short for Macro Smoothing!");
             return;
         }
 
@@ -428,7 +428,7 @@ public class SplineBaker : MonoBehaviour
         EditorUtility.SetDirty(splineContainer.gameObject);
 #endif
 
-        Debug.Log($"[SplineBaker] Macro Smoothing: {spline.Count} якорных точек с шагом ~{macroAnchorDistance}м.");
+        Debug.Log($"[SplineBaker] Macro Smoothing: {spline.Count} anchor knots with step ~{macroAnchorDistance}m.");
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -448,7 +448,7 @@ public class SplineBaker : MonoBehaviour
         Vector3 scale = transform.localScale;
         if (scale == Vector3.one)
         {
-            Debug.Log("[SplineBaker] Скейл уже (1, 1, 1). Запекать нечего.");
+            Debug.Log("[SplineBaker] Scale is already (1, 1, 1). Nothing to bake.");
             return;
         }
 
@@ -484,7 +484,7 @@ public class SplineBaker : MonoBehaviour
         EditorUtility.SetDirty(splineContainer.gameObject);
 #endif
 
-        Debug.Log("[SplineBaker] Масштаб записан в точки сплайна, Transform Scale сброшен на (1, 1, 1).");
+        Debug.Log("[SplineBaker] Scale baked into spline knots, Transform Scale reset to (1, 1, 1).");
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -535,7 +535,7 @@ public class SplineBaker : MonoBehaviour
         EditorUtility.SetDirty(splineContainer.gameObject);
 #endif
 
-        Debug.Log($"[SplineBaker] Удалено {removedCount} узлов. Осталось: {spline.Count}.");
+        Debug.Log($"[SplineBaker] Removed {removedCount} knots. Remaining: {spline.Count}.");
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -556,8 +556,8 @@ public class SplineBaker : MonoBehaviour
 
         if (originalCount > 1000)
         {
-            Debug.LogWarning($"[SplineBaker] ОСТОРОЖНО: {originalCount} узлов. " +
-                             $"Разделение создаст {originalCount * 2} узлов!");
+            Debug.LogWarning($"[SplineBaker] WARNING: {originalCount} knots. " +
+                             $"Subdividing will create {originalCount * 2} knots!");
         }
 
         int limit = spline.Closed ? originalCount : originalCount - 1;
@@ -579,7 +579,7 @@ public class SplineBaker : MonoBehaviour
         EditorUtility.SetDirty(splineContainer.gameObject);
 #endif
 
-        Debug.Log($"[SplineBaker] Subdivided: {spline.Count} узлов.");
+        Debug.Log($"[SplineBaker] Subdivided: {spline.Count} knots.");
     }
 
     // ═══════════════════════════════════════════════════════════════════════

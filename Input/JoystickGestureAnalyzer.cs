@@ -18,18 +18,13 @@ namespace Odal.Input
         /// <summary>Максимальный радиус отклонения (пикс). Дальше — насыщение.</summary>
         public float MaxRadius { get; set; } = 150f;
 
-        /// <summary>
-        /// Порог скорости свайпа (пикс/сек).
-        /// Быстрее → Boost (вверх) или Preload (вниз).
-        /// Медленнее → нормаль или Тормоз (вниз).
-        /// </summary>
-        public float SwipeVelocityThreshold { get; set; } = 800f;
-
-        /// <summary>Минимальный нормализованный Y-компонент для классификации свайпа ВВЕРХ.</summary>
+        // ── Thresholds ──────────────────────────────────────────────────
+        // (Оставлены для совместимости, но логика кнопок теперь в UI)
         public float UpSwipeThreshold { get; set; } = 0.55f;
-
-        /// <summary>Минимальный нормализованный |Y|-компонент для классификации свайпа ВНИЗ.</summary>
         public float DownSwipeThreshold { get; set; } = 0.45f;
+        public float _boostThreshold = 0.85f;
+        public float _brakeZoneStart = -0.4f;
+        public float _preloadThreshold = -0.85f;
 
         // ── Выходное состояние (читается SpherePhysicsCore в FixedTick) ─
 
@@ -39,8 +34,11 @@ namespace Odal.Input
         /// <summary>Нормализованное руление [-1..1]. Отрицательное = влево.</summary>
         public float Steering { get; private set; }
 
-        /// <summary>Активен режим торможения (медленный свайп вниз).</summary>
-        public bool IsBraking { get; private set; }
+        /// <summary>Активен режим торможения (множитель > 0).</summary>
+        public bool IsBraking => BrakeMultiplier > 0f;
+
+        /// <summary>Множитель силы торможения для мульти-тапов.</summary>
+        public float BrakeMultiplier { get; private set; }
 
         /// <summary>Активен режим Preload — сжатие перед прыжком (резкий свайп вниз).</summary>
         public bool IsPreloading { get; private set; }
@@ -53,17 +51,31 @@ namespace Odal.Input
 
         // ── Внутреннее состояние ────────────────────────────────────────
 
-        private Vector2 _previousPosition;
-        private float   _instantSwipeVelocity; // px/sec
+        // ═══════════════════════════════════════════════════════════════
+        //  Публичный API — вызывается InputTouchHandler / VirtualJoystickUI
+        // ═══════════════════════════════════════════════════════════════
 
-        // ═══════════════════════════════════════════════════════════════
-        //  Публичный API — вызывается InputTouchHandler
-        // ═══════════════════════════════════════════════════════════════
+        public void SetBoostActive(bool active)   => IsBoosting = active;
+        public void SetPreloadActive(bool active) => IsPreloading = active;
+        public void SetBrakeMultiplier(float mult)=> BrakeMultiplier = mult;
+
+        /// <summary>Прямая передача нормализованных осей (для наэкранного джойстика) [-1..1].</summary>
+        public void SetVirtualAxis(Vector2 normalizedAxis)
+        {
+            float nx = Mathf.Clamp(normalizedAxis.x, -1f, 1f);
+            float ny = Mathf.Clamp(normalizedAxis.y, -1f, 1f);
+
+            if (IsBoosting) Throttle = 1.0f;
+            else if (IsBraking || IsPreloading) Throttle = 0f;
+            else Throttle = Mathf.Clamp01((ny + 1f) * 0.5f);
+
+            Steering = IsPreloading ? nx * 0.3f : nx;
+            IsTouching = true;
+        }
 
         public void OnTouchBegan(Vector2 startPosition)
         {
-            IsTouching        = true;
-            _previousPosition = startPosition;
+            IsTouching = true;
             ResetState();
         }
 
@@ -75,72 +87,37 @@ namespace Odal.Input
         /// <param name="deltaTime">Время кадра для расчёта V_swipe = ΔDistance / ΔTime.</param>
         public void OnTouchMoved(Vector2 startPos, Vector2 currentPos, float deltaTime)
         {
-            // ── V_swipe = ΔDistance / ΔTime ─────────────────────────────
-            float frameDelta         = (currentPos - _previousPosition).magnitude;
-            _instantSwipeVelocity    = deltaTime > 0.0001f ? frameDelta / deltaTime : 0f;
-            _previousPosition        = currentPos;
-
             Vector2 delta    = currentPos - startPos;
             float   distance = delta.magnitude;
 
-            // ── Мёртвая зона: автогаз, руль по центру ───────────────────
+            // ── Dead Zone ───────────────────
             if (distance < DeadZoneRadius)
             {
-                Throttle     = 1f;
-                Steering     = 0f;
-                IsBraking    = false;
-                IsPreloading = false;
-                IsBoosting   = false;
+                if (IsBoosting) Throttle = 1f;
+                else if (IsBraking || IsPreloading) Throttle = 0f;
+                else Throttle = 1f; // автогаз в центре
+                
+                Steering = 0f;
                 return;
             }
 
-            // Нормализуем с насыщением на MaxRadius → компоненты в [-1..1]
+            // Normalize and clamp
             float   clampedDist = Mathf.Min(distance, MaxRadius);
             Vector2 normalized  = delta / clampedDist;
 
-            float nx = Mathf.Clamp(normalized.x, -1f, 1f); // руление
-            float ny = Mathf.Clamp(normalized.y, -1f, 1f); // вертикаль
+            float nx = Mathf.Clamp(normalized.x, -1f, 1f);
+            float ny = Mathf.Clamp(normalized.y, -1f, 1f);
 
-            // ── BOOST: резкий свайп ВВЕРХ ────────────────────────────────
-            if (ny > UpSwipeThreshold && _instantSwipeVelocity > SwipeVelocityThreshold)
-            {
-                IsBoosting   = true;
-                IsPreloading = false;
-                IsBraking    = false;
-                Throttle     = 1f;
-                Steering     = nx;
-                return;
-            }
+            // UI Button overrides take precedence for Throttle
+            if (IsBoosting) 
+                Throttle = 1.0f;
+            else if (IsBraking || IsPreloading) 
+                Throttle = 0f;
+            else 
+                Throttle = Mathf.Clamp01((ny + 1f) * 0.5f);
 
-            // ── Свайп ВНИЗ: дифференциация Тормоз / Preload ─────────────
-            if (ny < -DownSwipeThreshold)
-            {
-                Throttle   = 0f;
-                Steering   = nx;
-                IsBoosting = false;
-
-                if (_instantSwipeVelocity > SwipeVelocityThreshold)
-                {
-                    // Резкий → Preload (подготовка к прыжку)
-                    IsPreloading = true;
-                    IsBraking    = false;
-                }
-                else
-                {
-                    // Медленный → Тормоз
-                    IsBraking    = true;
-                    IsPreloading = false;
-                }
-                return;
-            }
-
-            // ── Обычное движение: газ + руление ─────────────────────────
-            // ny: [-1..1] → throttle [0..1] (при ny=0 → 0.5, ny=+1 → 1.0)
-            IsBraking    = false;
-            IsPreloading = false;
-            IsBoosting   = false;
-            Throttle     = Mathf.Clamp01((ny + 1f) * 0.5f);
-            Steering     = nx;
+            // Steering Logic
+            Steering = IsPreloading ? nx * 0.3f : nx;
         }
 
         public void OnTouchEnded()
@@ -158,7 +135,7 @@ namespace Odal.Input
             IsTouching   = isTouching;
             Steering     = Mathf.Clamp(steering, -1f, 1f);
             Throttle     = Mathf.Clamp01(throttle);
-            IsBraking    = isBraking;
+            BrakeMultiplier = isBraking ? 1f : 0f;
             IsPreloading = false;
             IsBoosting   = false;
         }
@@ -169,10 +146,9 @@ namespace Odal.Input
         {
             Throttle              = 0f;
             Steering              = 0f;
-            IsBraking             = false;
+            BrakeMultiplier       = 0f;
             IsPreloading          = false;
             IsBoosting            = false;
-            _instantSwipeVelocity = 0f;
         }
     }
 }

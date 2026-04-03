@@ -18,13 +18,16 @@ namespace Odal.Gameplay
     public class RespawnManager : MonoBehaviour, IService, IUpdatable
     {
         [Header("Settings")]
-        [Tooltip("Насколько низко относительно трассы можно упасть, чтобы сработал респаун.")]
+        [Tooltip("How far down relative to the track you can fall before triggering respawn.")]
         [SerializeField] private float _fallDepthThreshold = 15f;
         
-        [Tooltip("Высота появления байка НАД треком при респауне")]
+        [Tooltip("Grace period (seconds) before respawning after falling below threshold.")]
+        [SerializeField] private float _fallGraceTime = 1.5f;
+
+        [Tooltip("Height offset above the track when respawning.")]
         [SerializeField] private float _respawnHeightOffset = 2f;
         
-        [Tooltip("Время, которое машина может лежать вверх ногами до авто-респавна (секунды)")]
+        [Tooltip("Time the vehicle can stay flipped before auto-respawning (seconds).")]
         [SerializeField] private float _maxFlippedTime = 3f;
 
         [Header("Track Raycasting")]
@@ -39,9 +42,12 @@ namespace Odal.Gameplay
 
         private float _flippedTimer;
         private float _checkTimer;
+        private float _currentFallTime;
         private const float CHECK_INTERVAL = 0.2f;
         
         private Vector3 _lastNearestSplinePos;
+        private Vector3 _lastSplineTangent;
+        private Vector3 _safeSplinePos;
 
         public void Init(ServiceLocator locator, SpherePhysicsCore player)
         {
@@ -55,7 +61,11 @@ namespace Odal.Gameplay
             _locator.GetService<UpdateManager>().RegisterUpdatable(this);
 
             if (_player != null)
+            {
                 _lastNearestSplinePos = _player.transform.position;
+                _lastSplineTangent = _player.transform.forward;
+                _safeSplinePos = _lastNearestSplinePos;
+            }
 
             Debug.Log($"<b>RespawnManager</b>: Init OK. FallDepthThreshold={_fallDepthThreshold}");
         }
@@ -76,7 +86,7 @@ namespace Odal.Gameplay
             {
                 _checkTimer = CHECK_INTERVAL;
                 _spline.GetNearestPoint(_player.transform.position, 
-                    out _lastNearestSplinePos, out _, out _);
+                    out _lastNearestSplinePos, out _lastSplineTangent, out _);
             }
 
             CheckFallRespawn();
@@ -85,18 +95,25 @@ namespace Odal.Gameplay
 
         private void CheckFallRespawn()
         {
-            // Ищем физическую сгенерированную дорогу точно под сплайном
+            // Look for the physical generated road precisely under the spline
             float trueTrackHeight = _lastNearestSplinePos.y; 
 
+            int safeMask = _trackLayer & ~(1 << _player.gameObject.layer);
             Vector3 rayStart = _lastNearestSplinePos + Vector3.up * _raycastHeightOffset;
-            if (Physics.Raycast(rayStart, Vector3.down, out RaycastHit hit, _raycastHeightOffset * 2f, _trackLayer))
+            bool didHitTrack = Physics.Raycast(rayStart, Vector3.down, out RaycastHit hit, _raycastHeightOffset * 2f, safeMask);
+
+            if (didHitTrack)
             {
-                trueTrackHeight = hit.point.y; // Дорога найдена, берем её реальную высоту
+                trueTrackHeight = hit.point.y; // Road found, use its real height
             }
 
-            // Вылетел по горизонтали? Используем TrackWidth из ISplineProvider
+            // Check if player flew out horizontally based on TrackWidth
             Vector3 toPlayer = _player.transform.position - _lastNearestSplinePos;
-            float horizontalDist = Vector3.ProjectOnPlane(toPlayer, Vector3.up).magnitude;
+            
+            // CRUCIAL: Ignore forward distance caused by 0.2s cache lag during high speeds!
+            Vector3 perpToPlayer = Vector3.ProjectOnPlane(toPlayer, _lastSplineTangent);
+            float horizontalDist = Vector3.ProjectOnPlane(perpToPlayer, Vector3.up).magnitude;
+            
             float allowedWidth = (_spline.TrackWidth * 0.5f) + 1.5f;
 
             bool isFallen = _player.transform.position.y < trueTrackHeight - _fallDepthThreshold;
@@ -104,7 +121,20 @@ namespace Odal.Gameplay
 
             if (isFallen || isOutHorizontally)
             {
-                DoRespawn();
+                _currentFallTime += Time.deltaTime;
+                if (_currentFallTime >= _fallGraceTime)
+                {
+                    DoRespawn();
+                }
+            }
+            else
+            {
+                _currentFallTime = 0f;
+                // Only track the safe position when the vehicle is actively on the road, AND the physical road exists!
+                if (didHitTrack)
+                {
+                    _safeSplinePos = _lastNearestSplinePos;
+                }
             }
         }
 
@@ -132,36 +162,57 @@ namespace Odal.Gameplay
             if (_player == null || _spline == null) return;
 
             _flippedTimer = 0f;
+            _currentFallTime = 0f;
+            _checkTimer = CHECK_INTERVAL; // Force refresh logic
 
-            // Вычисляем данные на сплайне В ТЕКУЩЕЙ точке
-            _spline.GetNearestPoint(_player.transform.position, 
+            // Use the last SAFE track position before the player flew off, rather than their dead body pos
+            _spline.GetNearestPoint(_safeSplinePos, 
                 out Vector3 worldPos, out Vector3 worldTangent, out Vector3 worldUp);
+            _lastNearestSplinePos = worldPos; // Explicitly update to stop immediate re-triggering!
 
-            // Ищем физическую сгенерированную дорогу, чтобы поставить байк прямо на неё
+            int safeMask = _trackLayer & ~(1 << _player.gameObject.layer);
+            // Find the physical generated road to place the bike right on it
             Vector3 rayStart = worldPos + Vector3.up * _raycastHeightOffset;
-            if (Physics.Raycast(rayStart, Vector3.down, out RaycastHit hit, _raycastHeightOffset * 2f, _trackLayer))
+            if (Physics.Raycast(rayStart, Vector3.down, out RaycastHit hit, _raycastHeightOffset * 2f, safeMask))
             {
                 worldPos = hit.point;
-                worldUp = hit.normal; // Выравниваем байк по реальному склону
+                worldUp = hit.normal; // Align the bike with the real slope
                 worldTangent = Vector3.ProjectOnPlane(worldTangent, worldUp).normalized;
             }
 
-            // Move the vehicle to the nearest point on the road, elevated by the offset
-            _player.transform.position = worldPos + (worldUp * _respawnHeightOffset);
-            
-            // Защита: Если tangent равен zero, используем forward
-            if (worldTangent.sqrMagnitude > 0.001f)
-                _player.transform.rotation = Quaternion.LookRotation(worldTangent, worldUp);
-
-            // Мгновенное гашение скоростей (требование: public Rigidbody VehicleRigidbody => _rb;)
             Rigidbody rb = _player.VehicleRigidbody;
+            CollisionDetectionMode oldMode = CollisionDetectionMode.Discrete;
+
             if (rb != null)
             {
+                oldMode = rb.collisionDetectionMode;
+                rb.collisionDetectionMode = CollisionDetectionMode.Discrete; // Prevent CCD from sweeping across the map
+                rb.isKinematic = true; // Clear physics solver
+            }
+
+            Vector3 finalPos = worldPos + (worldUp * _respawnHeightOffset);
+            Quaternion finalRot = _player.transform.rotation;
+
+            // Protection: If tangent is zero, use forward
+            if (worldTangent.sqrMagnitude > 0.001f)
+                finalRot = Quaternion.LookRotation(worldTangent, worldUp);
+
+            // Properly teleport the physics body and transform
+            _player.transform.position = finalPos;
+            _player.transform.rotation = finalRot;
+
+            if (rb != null)
+            {
+                rb.position = finalPos;
+                rb.rotation = finalRot;
+                
+                rb.isKinematic = false;
+                rb.collisionDetectionMode = oldMode;
                 rb.linearVelocity = Vector3.zero;
                 rb.angularVelocity = Vector3.zero;
             }
 
-            Debug.Log("<b>RespawnManager</b>: レスパウン完了 (Фулл респаун по легаси системе)!");
+            Debug.Log("<b>RespawnManager</b>: Respawn triggered!");
             OnRespawn?.Invoke();
         }
     }

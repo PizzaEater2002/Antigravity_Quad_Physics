@@ -15,6 +15,8 @@ namespace Odal.Core
     public class GameBootstrapper : MonoBehaviour, IFixedUpdatable
     {
         [Header("System")]
+        [Tooltip("Target Frame Rate lock. Default is 60. Set to -1 for unlimited.")]
+        [SerializeField] private int _targetFPS = 60;
         [SerializeField] private UpdateManager _updateManagerPrefab;
 
         [Header("Player Vehicle")]
@@ -41,10 +43,11 @@ namespace Odal.Core
         private ServiceLocator          _serviceLocator;
         private UpdateManager           _activeUpdateManager;
         private JoystickGestureAnalyzer _analyzer;
+        private bool                    _keyboardWasUsed;
 
         private void Awake()
         {
-            Application.targetFrameRate = 60; // Разлочка 60 FPS для плавности на мобилках
+            Application.targetFrameRate = _targetFPS; 
             InitArchitecture();
             InitGame();
         }
@@ -208,8 +211,13 @@ namespace Odal.Core
             {
                 float throttle = brk ? 0f : 1f;
                 _analyzer.SetEditorInput(h, throttle, true, brk);
+                _keyboardWasUsed = true;
             }
-            // Если клавиш нет — НЕ сбрасываем! Джойстик сам управляет IsTouching.
+            else if (_keyboardWasUsed)
+            {
+                _analyzer.SetEditorInput(0f, 0f, false, false);
+                _keyboardWasUsed = false;
+            }
         }
 #endif
     }
